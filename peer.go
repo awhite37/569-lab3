@@ -20,7 +20,8 @@ type Worker struct {
 	isCandidate bool
 	votedFor		int
 	voteinput	chan VoteRequest
-	votes       chan int
+	votes       chan VoteResponse
+	timeout     chan int
 
 	persistor   Persistor
 
@@ -33,6 +34,11 @@ type VoteRequest struct {
 	term      int
 	lastTerm  int
 	lastIndex int
+}
+
+type VoteResponse struct {
+	term 		int
+	granted  bool
 }
 
 type ApplyMsg struct {
@@ -84,7 +90,16 @@ func (worker *Worker) requestVotes(term int) {
 		return
 	}
 	for len(worker.votes) > 0 {
-		votes += <- worker.votes
+		vote := <- worker.votes
+		if vote.term > worker.term {
+			worker.isCandidate = false
+			worker.term = vote.term
+			fmt.Printf("node %d reverting to follower on term %d\n", worker.id, worker.term)
+			return
+		}
+		if vote.term == term && vote.granted {
+			votes += 1
+		}
 	}
 	//check for majority
 	fmt.Printf("node %d got %d votes for term %d\n", worker.id, votes, worker.term)
@@ -98,7 +113,6 @@ func (worker *Worker) requestVotes(term int) {
 			peer.applyCh <- ApplyMsg {entries: nil, term: worker.term, leaderID: worker.id}
 		}
 	}
-	worker.votedFor = -1
 }
 
 
@@ -108,7 +122,12 @@ func (worker *Worker) election() {
 		if (!worker.isLeader) {
 			//wait for leader, then become candidate
 			select {
-			case <-worker.applyCh:
+			case msg := <-worker.applyCh:
+				if msg.term >= worker.term {
+					go worker.handleMsg(msg)
+					continue
+				}
+			case <- worker.timeout:
 				continue
 			//random timeout between 150-300ms
 			case <- time.After(time.Duration(rand.Intn(150) + 151) * time.Millisecond) : 
@@ -123,19 +142,33 @@ func (worker *Worker) election() {
 	}
 }
 
+func (worker *Worker) handleMsg(msg ApplyMsg) {
+
+}
+
 func (worker *Worker) respondToVotes() {
+	highestVoted := 0
 	for {
-		if (!worker.isLeader) {
+		if (!worker.isLeader && !worker.isCandidate) {
 			vote := <- worker.voteinput
+			if vote.term > highestVoted {
+				highestVoted = vote.term
+				worker.votedFor = -1
+			}
 			fmt.Printf("node %d term %d got vote request from node %d on term %d, curr voted for: %d\n", worker.id, worker.term, vote.from.id, vote.term, worker.votedFor)
 			if vote.term > worker.term && 
 				(worker.votedFor == -1 || worker.votedFor == vote.from.id) && vote.lastIndex >= worker.commitIndex {
 				//grant vote
 				worker.term = vote.term
-				(vote.from).votes <- 1
+				(vote.from).votes <- VoteResponse{term: worker.term, granted: true}
 				worker.votedFor = vote.from.id
+				//restart election timer
+				worker.timeout <- 1
 				fmt.Printf("node %d voting for node %d on term %d\n", worker.id, vote.from.id, vote.term)
+			} else {
+				(vote.from).votes <- VoteResponse{term: worker.term, granted: false}
 			}
+
 		} 
 		
 	}
@@ -150,6 +183,7 @@ func (worker *Worker) revert() {
 					//revert to follower
 					worker.isCandidate = false
 					worker.isLeader = false
+					worker.term = msg.term
 					fmt.Printf("node %d reverting to follower on term %d\n", worker.id, worker.term)
 				}	
 			}
@@ -158,17 +192,15 @@ func (worker *Worker) revert() {
 }
 
 func (worker *Worker) HB() {
-	if worker.id != 0 && worker.id != 3 {
-		for{
-			time.Sleep(X)
-			if worker.isLeader {
-				fmt.Printf("curr leader: %d, term: %d\n", worker.id, worker.term)
-				for _, peer := range(worker.peers) {
-					peer.applyCh <- ApplyMsg {entries: nil, term: worker.term, leaderID: worker.id}
-				}
+	for{
+		time.Sleep(X)
+		if worker.isLeader {
+			fmt.Printf("curr leader: %d, term: %d\n", worker.id, worker.term)
+			for _, peer := range(worker.peers) {
+				peer.applyCh <- ApplyMsg {entries: nil, term: worker.term, leaderID: worker.id}
 			}
 		}
-	}	
+	}
 }
 
 func Make(peers []*Worker, me int, persistor Persistor, applyCh chan ApplyMsg) (worker *Worker) {
@@ -186,7 +218,8 @@ func Make(peers []*Worker, me int, persistor Persistor, applyCh chan ApplyMsg) (
 		isCandidate:	false,
 		votedFor:		-1,
 		voteinput:		make(chan VoteRequest, 10),
-		votes:       	make(chan int, 10),
+		votes:       	make(chan VoteResponse, 10),
+		timeout:        make(chan int, 10),
 		persistor:   	persistor,
 		log:				[]*LogEntry{},
 	}
