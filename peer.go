@@ -62,10 +62,10 @@ type Persistor struct {
  
 
 func (worker *Worker) run() {
-	//launch hb protocol
 	go worker.HB()
 	go worker.respondToVotes()
-	go worker.election()
+	go worker.electionTimeout()
+	go worker.handleMsg()
 	go worker.revert()
 	for {
 		//let worker run
@@ -116,17 +116,12 @@ func (worker *Worker) requestVotes(term int) {
 }
 
 
-func (worker *Worker) election() {
+func (worker *Worker) electionTimeout() {
 	rand.Seed(time.Now().UnixNano())
 	for {
 		if (!worker.isLeader) {
 			//wait for leader, then become candidate
 			select {
-			case msg := <-worker.applyCh:
-				if msg.term >= worker.term {
-					go worker.handleMsg(msg)
-					continue
-				}
 			case <- worker.timeout:
 				continue
 			//random timeout between 150-300ms
@@ -142,8 +137,17 @@ func (worker *Worker) election() {
 	}
 }
 
-func (worker *Worker) handleMsg(msg ApplyMsg) {
-
+func (worker *Worker) handleMsg() {
+	for {
+		if (!worker.isLeader) {
+			msg := <- worker.applyCh
+			if msg.term >= worker.term {
+				//message from leader, reset election timeout
+				worker.timeout <- 1
+				//handle message
+			}
+		}
+	}
 }
 
 func (worker *Worker) respondToVotes() {
