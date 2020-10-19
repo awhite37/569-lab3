@@ -6,7 +6,7 @@ import "fmt"
 import "sync"
 
 //time to wait before counting votes
-const Z = 100 * time.Millisecond
+const Z = 50 * time.Millisecond
 //time to wait before sending heartbeat
 const X = 50 * time.Millisecond
 
@@ -183,12 +183,13 @@ func (worker *Worker) respondToVotes() {
 		vote := <- worker.voteinput
 		worker.mux.RLock() 
 		term := worker.term
+		isCandidate := worker.isCandidate
 		worker.mux.RUnlock()
-		if vote.term > term {
+		if vote.term > term  {
 			worker.revert(vote.term)
 		}
 		worker.mux.RLock() 
-		isCandidate := worker.isCandidate
+		isCandidate = worker.isCandidate
 		isLeader := worker.isLeader
 		worker.mux.RUnlock()
 		if (!isLeader && !isCandidate) {
@@ -235,7 +236,7 @@ func (worker *Worker) HB() {
 	worker.mux.RLock()
 	id := worker.id
 	worker.mux.RUnlock()
-	if id != 0 && id != 3 {
+	if id == 3 {
 		for{
 			time.Sleep(X)
 			worker.mux.RLock()
