@@ -6,7 +6,7 @@ import "fmt"
 import "sync"
 
 //time to wait before counting votes
-const Z = 50 * time.Millisecond
+const Z = 100 * time.Millisecond
 //time to wait before sending heartbeat
 const X = 50 * time.Millisecond
 
@@ -88,27 +88,17 @@ func (worker *Worker) requestVotes(term int) {
 	//quit if accepted other leader
 	worker.mux.RLock()
 	isCandidate := worker.isCandidate
+	newTerm := worker.term
+	id := worker.id
 	worker.mux.RUnlock()
-	if !isCandidate {
-		worker.mux.RLock()
-		id := worker.id
-		term2 := worker.term
-		worker.mux.RUnlock()
-		fmt.Printf("node %d no longer candidate for term %d\n", id, term2)
+	if !isCandidate || newTerm != term{
+		fmt.Printf("node %d no longer candidate for term %d\n", id, term)
 		return
 	}
 	for len(worker.votes) > 0 {
 		vote := <- worker.votes
 		if vote.term > term {
-			worker.mux.Lock()
-			worker.isCandidate = false
-			worker.term = vote.term
-			worker.mux.Unlock()
-			worker.mux.RLock()
-			id := worker.id
-			term2 := worker.term
-			worker.mux.RUnlock()
-			fmt.Printf("node %d reverting to follower on term %d\n", id, term2)
+			worker.revert(vote.term)
 			return
 		}
 		if vote.term == term && vote.granted {
@@ -117,7 +107,6 @@ func (worker *Worker) requestVotes(term int) {
 	}
 	//check for majority
 	worker.mux.RLock()
-	id := worker.id
 	term2 := worker.term
 	worker.mux.RUnlock()
 	fmt.Printf("node %d got %d votes for term %d\n", id, votes, term2)
@@ -130,7 +119,6 @@ func (worker *Worker) requestVotes(term int) {
 		worker.mux.Unlock()
 		//reset election timeout
 		worker.mux.RLock()
-		id := worker.id
 		term2 := worker.term
 		worker.mux.RUnlock()
 		for _, peer := range(worker.peers) {
@@ -153,17 +141,17 @@ func (worker *Worker) electionTimeout() {
 				break
 			//random timeout between 150-300ms
 			case <- time.After(time.Duration(rand.Intn(150) + 151) * time.Millisecond) : 
-				worker.mux.Lock()
-				worker.votedFor = worker.id
-				worker.isCandidate = true
-				worker.term += 1
-				worker.mux.Unlock()
 				worker.mux.RLock()
 				id := worker.id
 				term := worker.term
 				worker.mux.RUnlock()
-				fmt.Printf("node %d becoming candidate for term %d\n", id, term)
-				worker.requestVotes(term)
+				worker.mux.Lock()
+				worker.votedFor = id
+				worker.isCandidate = true
+				worker.term += 1
+				worker.mux.Unlock()
+				fmt.Printf("node %d becoming candidate for term %d\n", id, term+1)
+				worker.requestVotes(term+1)
 				break
 			}
 		}
@@ -192,12 +180,18 @@ func (worker *Worker) handleMsg() {
 func (worker *Worker) respondToVotes() {
 	highestVoted := 0
 	for {
-		worker.mux.RLock()
+		vote := <- worker.voteinput
+		worker.mux.RLock() 
+		term := worker.term
+		worker.mux.RUnlock()
+		if vote.term > term {
+			worker.revert(vote.term)
+		}
+		worker.mux.RLock() 
 		isCandidate := worker.isCandidate
 		isLeader := worker.isLeader
 		worker.mux.RUnlock()
 		if (!isLeader && !isCandidate) {
-			vote := <- worker.voteinput
 			if vote.term > highestVoted {
 				highestVoted = vote.term
 				worker.mux.Lock()
@@ -210,22 +204,24 @@ func (worker *Worker) respondToVotes() {
 			id := worker.id
 			commitIndex := worker.commitIndex
 			worker.mux.RUnlock()
-			fmt.Printf("node %d term %d got vote request from node %d on term %d, curr voted for: %d\n", id, term, vote.from.id, vote.term, worker.votedFor)
-			if vote.term > term && 
+			if vote.term > term {
+				worker.mux.Lock()
+				worker.term = vote.term
+				worker.mux.Unlock()
+			}
+			fmt.Printf("node %d term %d got vote request from node %d on term %d, curr voted for: %d\n", id, term, vote.from.id, vote.term, votedFor)
+			if vote.term >= term && 
 				(votedFor == -1 || votedFor == vote.from.id) && vote.lastIndex >= commitIndex {
 				//grant vote
 				worker.mux.Lock()
 				worker.term = vote.term
 				worker.votedFor = vote.from.id
 				worker.mux.Unlock()
+				fmt.Printf("node %d voting for node %d on term %d\n", id, vote.from.id, vote.term)
 				(vote.from).votes <- VoteResponse{term: vote.term, granted: true}
-			
 				//restart election timer
 				worker.timeout <- 1
-				worker.mux.RLock()
-				id := worker.id
-				worker.mux.RUnlock()
-				fmt.Printf("node %d voting for node %d on term %d\n", id, vote.from.id, vote.term)
+				
 			} else {
 				(vote.from).votes <- VoteResponse{term: term, granted: false}
 			}
@@ -236,22 +232,34 @@ func (worker *Worker) respondToVotes() {
 }
 
 func (worker *Worker) HB() {
-	for{
-		time.Sleep(X)
-		worker.mux.RLock()
-		isLeader := worker.isLeader
-		worker.mux.RUnlock()
-		if isLeader {
+	worker.mux.RLock()
+	id := worker.id
+	worker.mux.RUnlock()
+	if id != 0 && id != 3 {
+		for{
+			time.Sleep(X)
 			worker.mux.RLock()
-			id := worker.id
-			term := worker.term
+			isLeader := worker.isLeader
 			worker.mux.RUnlock()
-			fmt.Printf("curr leader: %d, term: %d\n", id, term)
-			for _, peer := range(worker.peers) {
-				peer.applyCh <- ApplyMsg {entries: nil, term: term, leaderID: id}
+			if isLeader {
+				worker.mux.RLock()
+				id := worker.id
+				term := worker.term
+				worker.mux.RUnlock()
+				fmt.Printf("curr leader: %d, term: %d\n", id, term)
+				for _, peer := range(worker.peers) {
+					peer.applyCh <- ApplyMsg {entries: nil, term: term, leaderID: id}
+				}
 			}
 		}
 	}
+}
+
+func (worker *Worker) revert(term int) {
+	worker.mux.Lock()
+	worker.isCandidate = false
+	worker.term = term
+	worker.mux.Unlock()
 }
 
 func Make(peers []*Worker, me int, persistor Persistor, applyCh chan ApplyMsg) (worker *Worker) {
