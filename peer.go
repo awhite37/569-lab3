@@ -201,7 +201,7 @@ func (worker *Worker) handleMsg() {
 				if msg.leaderCommit > commitIndex {
 					worker.mux.Lock()
 					worker.commitIndex = Min(msg.leaderCommit, len(worker.log)-1)
-					worker.mux.Lock()
+					worker.mux.Unlock()
 				}
 				worker.appendResponse <- Response{term:term, granted: true}
 			}
@@ -375,7 +375,7 @@ func (worker *Worker) leaderAppend() {
 				for _, peer := range worker.peers { 
 					peer.applyCh <- ApplyMsg{}
 				}
-				continue
+				break
 			}
 		}
 	}
@@ -391,7 +391,6 @@ func (worker *Worker) sendAppends(peer *Worker, i int, index int, entry *LogEntr
 	worker.mux.RUnlock()
 	entries := []LogEntry{}
 	entries = append(entries, *entry)
-	//fmt.Printf("id:%d, index: %d, next: %d, currTerm:%d, leaderCommit:%d\n", id, index, next, currTerm, leaderCommit)
 	for (index + 1) >= next {
 		if index != -1 {
 			worker.mux.RLock()

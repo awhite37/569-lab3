@@ -23,7 +23,7 @@ func main() {
 	workers := []*Worker{}
 	for i := 0; i < numWorkers; i++ {
 		persistor := Persistor{}
-		applyCh := make(chan ApplyMsg)
+		applyCh := make(chan ApplyMsg,10)
 		new := Make(workers, i, persistor, applyCh)
 		workers = append(workers, new)
 	}
@@ -31,8 +31,12 @@ func main() {
 		go worker.run()
 	}
 	command := keyval{}
-	fmt.Printf("issuing command\n")
+	fmt.Printf("issuing command 1\n")
 	workers[0].Start(command)
 	<- workers[0].applyCh
-	fmt.Printf("command successfully committed\n")
+	fmt.Printf("command 1 successfully committed\n")
+	fmt.Printf("issuing command 2\n")
+	workers[0].Start(command)
+	<- workers[0].applyCh
+	fmt.Printf("command 2 successfully committed\n")
 }
