@@ -73,6 +73,9 @@ type LogEntry struct {
 }
 
 type Persistor struct {
+	currentTerm int
+	votedFor    int
+	log 			[]*LogEntry
 }
 
 func (worker *Worker) run() {
