@@ -31,7 +31,6 @@ type Worker struct {
 	votedFor       int
 	voteinput      chan VoteRequest
 	votes          chan Response
-	leaderCommand  chan interface{}
 	appendResponse chan Response
 	numSuccess     chan int
 	timeout        chan int
@@ -458,7 +457,6 @@ func Make(peers []*Worker, me int, persistor Persistor, applyCh chan ApplyMsg) (
 		voteinput:      make(chan VoteRequest, 10),
 		votes:          make(chan Response, 10),
 		appendResponse: make(chan Response, 10),
-		leaderCommand:  make(chan interface{}, 10),
 		numSuccess:     make(chan int, 10),
 		timeout:        make(chan int, 10),
 		persistor:      persistor,
