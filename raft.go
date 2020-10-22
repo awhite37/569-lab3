@@ -42,7 +42,9 @@ func main() {
 	for i, worker := range(workers) {
 		fmt.Printf("\nWorker %d's log\n", i)
 		for _, entry := range(worker.log) {
+			worker.mux.RLock()
 			fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
+			worker.mux.RUnlock()
 		}
 	}
 	fmt.Printf("\n")
