@@ -5,10 +5,7 @@ import "fmt"
 const numWorkers = 5
 
 
-type Command interface {
-}
-
-type keyval struct {
+type KeyVal struct {
 	Key	string
 	Val   int
 }
@@ -27,9 +24,9 @@ func main() {
 	for _, worker := range(workers) {
 		go worker.run()
 	}
-	command1 := keyval{Key: "x", Val: 10}
-	command2 := keyval{Key: "y", Val: 20}
-	command3 := keyval{Key: "z", Val: 30}
+	command1 := KeyVal{Key: "x", Val: 10}
+	command2 := KeyVal{Key: "y", Val: 20}
+	command3 := KeyVal{Key: "z", Val: 30}
 	fmt.Printf("issuing command 1\n")
 	workers[0].Start(command1)
 	<- workers[0].applyCh
@@ -45,7 +42,7 @@ func main() {
 	for i, worker := range(workers) {
 		fmt.Printf("\nWorker %d's log\n", i)
 		for _, entry := range(worker.log) {
-			fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(keyval).Key, (entry.command).(keyval).Val)
+			fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
 		}
 	}
 	fmt.Printf("\n")
