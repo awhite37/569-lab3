@@ -44,6 +44,7 @@ func main() {
 	}
 	fmt.Println()
 
+	fmt.Println("Deleting Node 1\n")
 	db.DeleteNode(db.nodes[1])
 	display(db)
 
