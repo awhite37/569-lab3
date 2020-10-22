@@ -74,7 +74,7 @@ type LogEntry struct {
 type Persistor struct {
 	currentTerm int
 	votedFor    int
-	log 			[]*LogEntry
+	log         []*LogEntry
 }
 
 func (worker *Worker) run() {
@@ -115,7 +115,6 @@ func (worker *Worker) requestVotes(term int) {
 	id := worker.id
 	worker.mux.RUnlock()
 	if !isCandidate || newTerm != term {
-		fmt.Printf("node %d no longer candidate for term %d\n", id, term)
 		return
 	}
 	for len(worker.votes) > 0 {
@@ -231,13 +230,12 @@ func (worker *Worker) respondToVotes() {
 		vote := <-worker.voteinput
 		worker.mux.RLock()
 		term := worker.term
-		isCandidate := worker.isCandidate
 		worker.mux.RUnlock()
 		if vote.term > term {
 			worker.revert(vote.term)
 		}
 		worker.mux.RLock()
-		isCandidate = worker.isCandidate
+		isCandidate := worker.isCandidate
 		isLeader := worker.isLeader
 		worker.mux.RUnlock()
 		if !isLeader && !isCandidate {
@@ -261,10 +259,12 @@ func (worker *Worker) respondToVotes() {
 				worker.term = vote.term
 				worker.mux.Unlock()
 			}
-			fmt.Printf("node %d term %d got vote request from node %d on term %d, curr voted for: %d\n", id, term, vote.from.id, vote.term, votedFor)
+			fmt.Printf("node %d got vote request from node %d on term %d, curr voted for: %d\n", id, vote.from.id, vote.term, votedFor)
 			if vote.term >= term &&
 				(votedFor == -1 || votedFor == vote.from.id) &&
 				vote.lastIndex >= len(worker.log)-1 && vote.lastTerm >= lastTerm {
+				//restart election timer
+				worker.timeout <- 1
 				//grant vote
 				worker.mux.Lock()
 				worker.term = vote.term
@@ -272,15 +272,10 @@ func (worker *Worker) respondToVotes() {
 				worker.mux.Unlock()
 				fmt.Printf("node %d voting for node %d on term %d\n", id, vote.from.id, vote.term)
 				(vote.from).votes <- Response{term: vote.term, granted: true}
-				//restart election timer
-				worker.timeout <- 1
-
 			} else {
 				(vote.from).votes <- Response{term: term, granted: false}
 			}
-
 		}
-
 	}
 }
 
@@ -288,6 +283,7 @@ func (worker *Worker) HB() {
 	worker.mux.RLock()
 	id := worker.id
 	worker.mux.RUnlock()
+	//use this to configure which nodes can send HB for testing
 	if id < 10 {
 		for {
 			time.Sleep(X)
@@ -354,7 +350,7 @@ func (worker *Worker) leaderAppend(command interface{}) {
 	currTerm := worker.term
 	index := len(worker.log) - 1
 	worker.mux.RUnlock()
-	entry := LogEntry{command: command, term: currTerm, index: index}
+	entry := LogEntry{command: command, term: currTerm, index: index+1}
 	worker.mux.Lock()
 	worker.log = append(worker.log, &entry)
 	worker.mux.Unlock()
