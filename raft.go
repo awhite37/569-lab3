@@ -16,11 +16,13 @@ type KeyVal struct {
 
 func main() {
 	workers := []*Worker{}
+	persisters := []*Persister{}
 	for i := 0; i < numWorkers; i++ {
-		persistor := Persistor{}
+		persister := initPersister()
 		applyCh := make(chan ApplyMsg, 10)
-		new := Make(workers, i, persistor, applyCh)
+		new := Make(workers, i, persister, applyCh)
 		workers = append(workers, new)
+		persisters = append(persisters, persister)
 	}
 	
 	for _, worker := range(workers) {
@@ -43,7 +45,18 @@ func main() {
 		fmt.Printf("\nWorker %d's log\n", i)
 		worker.printLog()
 	}
+	fmt.Printf("\ndisplaying saved Persister states:\n")
+	for i, p := range(persisters) {
+		p.mux.RLock()
+		fmt.Printf("\nWorker %d's currentTerm: %d\n", i, p.currentTerm)
+		fmt.Printf("Worker %d's votedFor: %d\n", i, p.votedFor)
+		fmt.Printf("Worker %d's perister log\n", i)
+		p.mux.RUnlock()
+		displayPersisterLog(p)	
+
+	}
 	fmt.Printf("\n")
+
 }
 
 func applyCommand(command interface{}, worker *Worker) {
@@ -58,6 +71,14 @@ func applyCommand(command interface{}, worker *Worker) {
 	   	continue
 		}
 	}
+}
+
+func displayPersisterLog(persister *Persister) {
+	persister.mux.RLock()
+	for _, entry := range(persister.log) {
+		fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
+	}
+	persister.mux.RUnlock()
 }
 
 
