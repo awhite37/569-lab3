@@ -22,8 +22,7 @@ func main() {
 		new := Make(workers, i, persistor, applyCh)
 		workers = append(workers, new)
 	}
-	workers[0].log = append(workers[0].log, &LogEntry{index:1, term: 0, command: KeyVal{Key: "jan", Val: 19}})
-	workers[0].log = append(workers[0].log, &LogEntry{index:2, term: 0, command: KeyVal{Key: "jan", Val: 19}})
+	
 	for _, worker := range(workers) {
 		go worker.run()
 	}
