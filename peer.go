@@ -302,6 +302,7 @@ func (worker *Worker) respondToVotes() {
 				worker.term = vote.term
 				worker.votedFor = vote.from.id
 				worker.mux.Unlock()
+				fmt.Printf("node %d voting for node %d on term %d\n", vote.from.id, id, vote.term)
 				(vote.from).votes <- Response{term: vote.term, granted: true}
 			} else {
 				(vote.from).votes <- Response{term: term, granted: false}
@@ -549,7 +550,7 @@ func (worker *Worker) GetState() (int, bool) {
 func (worker *Worker) printLog() {
 	worker.mux.RLock()
 	for _, entry := range(worker.log) {
-		fmt.Printf("id: %d, index %d: term: %d KeyVal: (%s,%d) \n", worker.id, entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
+		fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
 	}
 	worker.mux.RUnlock()
 }
