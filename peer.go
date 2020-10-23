@@ -12,7 +12,7 @@ const Z = 50 * time.Millisecond
 const X = 50 * time.Millisecond
 
 //time to wait before checking if commands can be applied
-const Y = 100 * time.Millisecond
+const Y = 500 * time.Millisecond
 
 type Worker struct {
 	id        int
@@ -92,9 +92,9 @@ func (worker *Worker) requestVotes(term int) {
 	votes := 1
 	lastTerm := -1
 	worker.mux.RLock()
-	index := len(worker.log) - 1
+	index := worker.commitIndex
 	worker.mux.RUnlock()
-	if len(worker.log) > 0 {
+	if len(worker.log) < index {
 		worker.mux.RLock()
 		lastTerm = worker.log[index].term
 		worker.mux.RUnlock()
@@ -204,6 +204,10 @@ func (worker *Worker) handleMsg() {
 				worker.mux.Unlock()
 			}
 			if msg.entries != nil {
+				if msg.prevIndex > -1 && len(worker.log) <= msg.prevIndex {
+						worker.appendResponse <- Response{term: term, granted: false}
+						continue
+					}
 				if msg.prevIndex != -1 {
 					worker.mux.RLock()
 					logTerm := worker.log[msg.prevIndex].term
@@ -212,15 +216,40 @@ func (worker *Worker) handleMsg() {
 						worker.appendResponse <- Response{term: term, granted: false}
 						continue
 					}
+					
 				}
+				worker.restoreLog(msg.leaderID, msg.leaderCommit, msg.prevIndex)
 				worker.mux.Lock()
-				worker.log = append(worker.log[0:msg.prevIndex+1], &msg.entries[0])
+				worker.log = append(worker.log, &msg.entries[0])
 				worker.mux.Unlock()
+				
 				worker.appendResponse <- Response{term: term, granted: true}
 			}
 		} else if msg.entries != nil {
 			worker.appendResponse <- Response{term: term, granted: false}
 		}
+	}
+}
+
+func (worker *Worker) restoreLog(leaderID int, leaderCommit int, prevIndex int) {
+	var leader *Worker
+	for _, peer := range(worker.peers) {
+		if peer.id == leaderID {
+			leader = peer
+			break
+		}
+	}
+	worker.mux.Lock()
+	worker.log = worker.log[:prevIndex+1]
+	worker.mux.Unlock()
+	for i := prevIndex+1; i < leaderCommit; i++ {
+		leader.mux.RLock()
+		entry := leader.log[i]
+		leader.mux.RUnlock()  
+		entryCpy := LogEntry{index:entry.index, term:entry.term, command:entry.command}
+		worker.mux.Lock()
+		worker.log = append(worker.log, &entryCpy)
+		worker.mux.Unlock()
 	}
 }
 
@@ -249,9 +278,12 @@ func (worker *Worker) respondToVotes() {
 			votedFor := worker.votedFor
 			term := worker.term
 			id := worker.id
+			commitIndex := worker.commitIndex
 			lastTerm := -1
-			if len(worker.log) > 0 {
-				lastTerm = worker.log[len(worker.log)-1].term
+			if len(worker.log) < commitIndex {
+				worker.mux.RLock()
+				lastTerm = worker.log[commitIndex].term
+				worker.mux.RUnlock()
 			}
 			worker.mux.RUnlock()
 			if vote.term > term {
@@ -262,7 +294,7 @@ func (worker *Worker) respondToVotes() {
 			fmt.Printf("node %d got vote request from node %d on term %d, curr voted for: %d\n", id, vote.from.id, vote.term, votedFor)
 			if vote.term >= term &&
 				(votedFor == -1 || votedFor == vote.from.id) &&
-				vote.lastIndex >= len(worker.log)-1 && vote.lastTerm >= lastTerm {
+				vote.lastIndex >= commitIndex && vote.lastTerm >= lastTerm {
 				//restart election timer
 				worker.timeout <- 1
 				//grant vote
@@ -270,7 +302,6 @@ func (worker *Worker) respondToVotes() {
 				worker.term = vote.term
 				worker.votedFor = vote.from.id
 				worker.mux.Unlock()
-				fmt.Printf("node %d voting for node %d on term %d\n", id, vote.from.id, vote.term)
 				(vote.from).votes <- Response{term: vote.term, granted: true}
 			} else {
 				(vote.from).votes <- Response{term: term, granted: false}
@@ -284,7 +315,7 @@ func (worker *Worker) HB() {
 	id := worker.id
 	worker.mux.RUnlock()
 	//use this to configure which nodes can send HB for testing
-	if id < 10 {
+	if id > -1{
 		for {
 			time.Sleep(X)
 			worker.mux.RLock()
@@ -321,7 +352,6 @@ func (worker *Worker) applyEntries() {
 		if commitIndex > lastApplied {
 			worker.mux.Lock()
 			worker.lastApplied += 1
-			//apply log[last applied] to state machine
 			worker.applyCh <- ApplyMsg{}
 			worker.mux.Unlock()
 		}
@@ -333,7 +363,7 @@ func (worker *Worker) initLeader() {
 	nextIndex := make([]int, len(worker.peers))
 	matchIndex := make([]int, len(worker.peers))
 	worker.mux.RLock()
-	index := len(worker.log) - 1
+	index := worker.commitIndex
 	worker.mux.RUnlock()
 	for i, _ := range worker.peers {
 		nextIndex[i] = index + 1
@@ -348,56 +378,70 @@ func (worker *Worker) initLeader() {
 func (worker *Worker) leaderAppend(command interface{}) {
 	worker.mux.RLock()
 	currTerm := worker.term
-	index := len(worker.log) - 1
+	prevIndex := worker.commitIndex+1
+	id := worker.id
 	worker.mux.RUnlock()
-	entry := LogEntry{command: command, term: currTerm, index: index+1}
+	entry := LogEntry{command: command, term: currTerm, index: prevIndex+1}
 	worker.mux.Lock()
+	worker.log = worker.log[:prevIndex]
 	worker.log = append(worker.log, &entry)
 	worker.mux.Unlock()
 
 	numSuccess := 0
 	for i, peer := range worker.peers {
 		worker.mux.RLock()
-		next := worker.nextIndex[i]
+		nextIndex := worker.nextIndex[i]
 		worker.mux.RUnlock()
-		if (index + 1) >= next {
-			go worker.sendAppends(peer, i, index, &entry)
+		if (prevIndex) >= nextIndex {
+			go worker.sendAppends(peer, i, currTerm, &entry)
 		}
 	}
 	worker.mux.RLock()
-	term := (worker.log[worker.commitIndex+1]).term
+	term := (worker.log[len(worker.log)-1]).term
+	isLeader := worker.isLeader
 	worker.mux.RUnlock()
-	for {
-		numSuccess += <-worker.numSuccess
-		if numSuccess > len(worker.peers)/2 && term == currTerm {
+	for isLeader && term == currTerm{
+		success := <-worker.numSuccess
+		if success == currTerm {
+			numSuccess += 1
+		}
+		if numSuccess > len(worker.peers)/2 {
 			worker.mux.Lock()
 			worker.commitIndex += 1
+			leaderCommit := worker.commitIndex
 			worker.mux.Unlock()
+			for _, peer := range worker.peers {
+				peer.entriesCh <- EntryMsg{entries: nil, term: term, leaderID: id, leaderCommit: leaderCommit}
+			}
 			break
 		}
+		worker.mux.RLock()
+		isLeader = worker.isLeader
+		worker.mux.RUnlock()
 	}
 }
 
-func (worker *Worker) sendAppends(peer *Worker, i int, index int, entry *LogEntry) {
+func (worker *Worker) sendAppends(peer *Worker, i int, leaderTerm int, entry *LogEntry) {
 	prevTerm := -1
 	worker.mux.RLock()
-	next := worker.nextIndex[i]
-	id := peer.id
-	currTerm := worker.term
+	nextIndex := worker.nextIndex[i] - 1
+	id := worker.id
 	leaderCommit := worker.commitIndex
 	worker.mux.RUnlock()
 	entries := []LogEntry{}
 	entries = append(entries, *entry)
-	for (index + 1) >= next {
-		if index != -1 {
+	for {
+		if nextIndex != -1 {
 			worker.mux.RLock()
-			prevTerm = worker.log[index].term
+			prevTerm = worker.log[nextIndex].term
 			worker.mux.RUnlock()
+		} else {
+			prevTerm = -1
 		}
 		apply := EntryMsg{
-			term:         currTerm,
+			term:         leaderTerm,
 			leaderID:     id,
-			prevIndex:    index,
+			prevIndex:    nextIndex,
 			prevTerm:     prevTerm,
 			entries:      entries,
 			leaderCommit: leaderCommit,
@@ -409,9 +453,9 @@ func (worker *Worker) sendAppends(peer *Worker, i int, index int, entry *LogEntr
 			worker.nextIndex[i] += 1
 			worker.matchIndex[i] += 1
 			worker.mux.Unlock()
-			worker.numSuccess <- 1
+			worker.numSuccess <- leaderTerm
 			return
-		} else if response.term > currTerm {
+		} else if response.term > leaderTerm {
 			worker.mux.Lock()
 			worker.isCandidate = false
 			worker.isLeader = false
@@ -422,7 +466,7 @@ func (worker *Worker) sendAppends(peer *Worker, i int, index int, entry *LogEntr
 			worker.mux.Lock()
 			worker.nextIndex[i] -= 1
 			worker.mux.Unlock()
-			next = -1
+			nextIndex -= 1
 		}
 	}
 }
@@ -478,6 +522,7 @@ func (worker *Worker) Start(command interface{}) (int, int, bool) {
 		worker.mux.RUnlock()
 		if isLeader {
 			leader = worker
+			break
 		}
 		for _, peer := range worker.peers {
 			peer.mux.RLock()
@@ -489,7 +534,7 @@ func (worker *Worker) Start(command interface{}) (int, int, bool) {
 			}
 		}
 	}
-	leader.leaderAppend(command)
+	go leader.leaderAppend(command)
 	return id, term, isLeader
 }
 
@@ -499,4 +544,12 @@ func (worker *Worker) GetState() (int, bool) {
 	isLeader := worker.isLeader
 	worker.mux.RUnlock()
 	return term, isLeader
+}
+
+func (worker *Worker) printLog() {
+	worker.mux.RLock()
+	for _, entry := range(worker.log) {
+		fmt.Printf("id: %d, index %d: term: %d KeyVal: (%s,%d) \n", worker.id, entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
+	}
+	worker.mux.RUnlock()
 }

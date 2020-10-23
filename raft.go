@@ -1,9 +1,10 @@
 package main
 
 import "fmt"
+import "time"
 
 const numWorkers = 5
-
+const N = 3000 * time.Millisecond
 
 type KeyVal struct {
 	Key	string
@@ -17,10 +18,12 @@ func main() {
 	workers := []*Worker{}
 	for i := 0; i < numWorkers; i++ {
 		persistor := Persistor{}
-		applyCh := make(chan ApplyMsg,10)
+		applyCh := make(chan ApplyMsg, 10)
 		new := Make(workers, i, persistor, applyCh)
 		workers = append(workers, new)
 	}
+	workers[0].log = append(workers[0].log, &LogEntry{index:1, term: 0, command: KeyVal{Key: "jan", Val: 19}})
+	workers[0].log = append(workers[0].log, &LogEntry{index:2, term: 0, command: KeyVal{Key: "jan", Val: 19}})
 	for _, worker := range(workers) {
 		go worker.run()
 	}
@@ -28,24 +31,34 @@ func main() {
 	command2 := KeyVal{Key: "y", Val: 20}
 	command3 := KeyVal{Key: "z", Val: 30}
 	fmt.Printf("issuing command 1\n")
-	workers[0].Start(command1)
-	<- workers[0].applyCh
+	applyCommand(command1, workers[0])
 	fmt.Printf("command 1 successfully committed\n")
 	fmt.Printf("issuing command 2\n")
-	workers[0].Start(command2)
-	<- workers[0].applyCh
+	applyCommand(command2, workers[0])
 	fmt.Printf("command 2 successfully committed\n")
 	fmt.Printf("issuing command 3\n")
-	workers[0].Start(command3)
-	<- workers[0].applyCh
+	applyCommand(command3, workers[0])
 	fmt.Printf("command 3 successfully committed\n")
+
 	for i, worker := range(workers) {
 		fmt.Printf("\nWorker %d's log\n", i)
-		for _, entry := range(worker.log) {
-			worker.mux.RLock()
-			fmt.Printf("index %d: term: %d KeyVal: (%s,%d) \n", entry.index, entry.term, (entry.command).(KeyVal).Key, (entry.command).(KeyVal).Val)
-			worker.mux.RUnlock()
-		}
+		worker.printLog()
 	}
 	fmt.Printf("\n")
 }
+
+func applyCommand(command interface{}, worker *Worker) {
+	worker.Start(command)
+	for {
+	   select {
+	   case <-worker.applyCh:
+	   	return
+	   case <-time.After(N):
+	   	fmt.Printf("leader crashed before commit, re-issuing command \n")
+	   	worker.Start(command)
+	   	continue
+		}
+	}
+}
+
+
