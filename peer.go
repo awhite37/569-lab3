@@ -12,7 +12,7 @@ const Z = 50 * time.Millisecond
 const X = 50 * time.Millisecond
 
 //time to wait before checking if commands can be applied
-const Y = 50 * time.Millisecond
+const Y = 100 * time.Millisecond
 
 type Worker struct {
 	id        int
@@ -76,7 +76,6 @@ func (worker *Worker) run() {
 	go worker.respondToVotes()
 	go worker.electionTimeout()
 	go worker.handleMsg()
-	go worker.applyEntries()
 	for {
 		//let worker run
 	}
@@ -182,7 +181,14 @@ func (worker *Worker) handleMsg() {
 		msg := <-worker.entriesCh
 		worker.mux.RLock()
 		term := worker.term
+		commitIndex := worker.commitIndex
 		worker.mux.RUnlock()
+		if msg.leaderCommit > commitIndex {
+			worker.mux.Lock()
+			worker.commitIndex = Min(msg.leaderCommit, len(worker.log)-1)
+			worker.mux.Unlock()
+			go worker.applyEntries()
+		}
 		if msg.term >= term {
 			worker.mux.Lock()
 			worker.isCandidate = false
@@ -193,14 +199,6 @@ func (worker *Worker) handleMsg() {
 			//message from leader, reset election timeout
 			worker.timeout <- 1
 			//handle message
-			worker.mux.RLock()
-			commitIndex := worker.commitIndex
-			worker.mux.RUnlock()
-			if msg.leaderCommit > commitIndex {
-				worker.mux.Lock()
-				worker.commitIndex = Min(msg.leaderCommit, len(worker.log)-1)
-				worker.mux.Unlock()
-			}
 			if msg.entries != nil {
 				if msg.prevIndex > -1 && len(worker.log) <= msg.prevIndex {
 						worker.appendResponse <- Response{term: term, granted: false}
@@ -216,6 +214,7 @@ func (worker *Worker) handleMsg() {
 					}
 					
 				}
+				
 				worker.restoreLog(msg.leaderID, msg.leaderCommit, msg.prevIndex)
 				worker.mux.Lock()
 				worker.log = append(worker.log, &msg.entries[0])
@@ -349,20 +348,16 @@ func (worker *Worker) revert(term int) {
 }
 
 func (worker *Worker) applyEntries() {
-	for {
-		time.Sleep(Y)
-		worker.mux.RLock()
-		commitIndex := worker.commitIndex
-		lastApplied := worker.lastApplied
-		worker.mux.RUnlock()
-		if commitIndex > lastApplied {
-			worker.mux.Lock()
-			worker.lastApplied += 1
-			worker.applyCh <- ApplyMsg{}
-			worker.mux.Unlock()
-		}
+	worker.mux.RLock()
+	commitIndex := worker.commitIndex
+	lastApplied := worker.lastApplied
+	worker.mux.RUnlock()
+	if commitIndex > lastApplied {
+		worker.mux.Lock()
+		worker.lastApplied += 1
+		worker.mux.Unlock()
+		worker.applyCh <- ApplyMsg{}
 	}
-
 }
 
 func (worker *Worker) initLeader() {
@@ -422,6 +417,7 @@ func (worker *Worker) leaderAppend(command interface{}) {
 				worker.commitIndex += 1
 				leaderCommit := worker.commitIndex
 				worker.mux.Unlock()
+				go worker.applyEntries()
 				for _, peer := range worker.peers {
 					peer.entriesCh <- EntryMsg{entries: nil, term: term, leaderID: id, leaderCommit: leaderCommit}
 				}
@@ -493,6 +489,14 @@ func Make(peers []*Worker, me int, persister *Persister, applyCh chan ApplyMsg) 
 	for _, peer := range peers {
 		workers = append(workers, peer)
 	}
+	//copy persister log
+	log := []*LogEntry{}
+	persister.mux.RLock()
+	for _, entry := range persister.log {
+		log = append(log, &LogEntry{index:entry.index, term:entry.term, command: entry.command})
+	}
+	persister.mux.RUnlock()
+
 	new := Worker{
 		id:             me,
 		applyCh:        applyCh,
@@ -510,7 +514,7 @@ func Make(peers []*Worker, me int, persister *Persister, applyCh chan ApplyMsg) 
 		numSuccess:     make(chan int, 10),
 		timeout:        make(chan int, 10),
 		persister:      persister,
-		log:            persister.log,
+		log:            log,
 	}
 
 	for _, peer := range peers {
