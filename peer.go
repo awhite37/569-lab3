@@ -71,12 +71,6 @@ type LogEntry struct {
 	index   int
 }
 
-type Persistor struct {
-	currentTerm int
-	votedFor    int
-	log         []*LogEntry
-}
-
 func (worker *Worker) run() {
 	go worker.HB()
 	go worker.respondToVotes()
@@ -140,6 +134,7 @@ func (worker *Worker) requestVotes(term int) {
 		worker.isCandidate = false
 		worker.term = term
 		worker.mux.Unlock()
+		worker.persistor.currentTerm = term
 		//reset election timeout
 		worker.mux.RLock()
 		term2 := worker.term
@@ -172,6 +167,7 @@ func (worker *Worker) electionTimeout() {
 				worker.isCandidate = true
 				worker.term += 1
 				worker.mux.Unlock()
+				worker.persistor.votedFor = id
 				fmt.Printf("node %d becoming candidate for term %d\n", id, term+1)
 				worker.requestVotes(term + 1)
 				break
@@ -222,6 +218,7 @@ func (worker *Worker) handleMsg() {
 				worker.mux.Lock()
 				worker.log = append(worker.log, &msg.entries[0])
 				worker.mux.Unlock()
+				worker.persistor.log = append(worker.persistor.log, &msg.entries[0])
 				
 				worker.appendResponse <- Response{term: term, granted: true}
 			}
