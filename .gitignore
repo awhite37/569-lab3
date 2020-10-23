@@ -4,6 +4,10 @@
 *.dll
 *.so
 *.dylib
+raft
+
+# Swap files
+*.swp
 
 # Test binary, built with `go test -c`
 *.test
